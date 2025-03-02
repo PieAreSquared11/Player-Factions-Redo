@@ -1,3 +1,5 @@
+dofile(minetest.get_modpath("factions_redo") .. "/notifications_manager.lua")
+
 local storage = minetest.get_mod_storage()
 
 factions = {}
@@ -34,7 +36,7 @@ function factions.get_faction_players(faction_name)
     local factions_data = factions.get_factions()
     local faction = factions_data[faction_name]
     if not faction then return {} end
-    
+
     local players = {}
     for player_name in pairs(faction.members) do
         table.insert(players, player_name)
@@ -45,7 +47,13 @@ end
 function factions.player_is_owner(player_name, faction_name)
     local factions_data = factions.get_factions()
     local faction = factions_data[faction_name]
-    return faction and faction.owner == player_name
+
+    if not faction then
+        minetest.chat_send_player(player_name, "ERROR: factions_redo line 51, faction is not defined")
+        return
+    end
+
+    return faction.owner == player_name
 end
 
 function factions.player_is_member(player_name, faction_name)
@@ -64,37 +72,48 @@ function factions.get_owned_faction(player_name)
     return nil
 end
 
+function factions.get_faction_by_name(faction_name)
+    local factions_data = factions.get_factions()
+    for name, faction in pairs(factions_data) do
+        if faction_name == name then
+            return faction
+        end
+    end
+    return nil
+end
+
 function factions.create_faction(faction_name, owner)
     if not faction_name:match("^[a-zA-Z]+$") then
         return false, "Faction name must contain only letters (a-z, A-Z)"
     end
-    
+
     local factions_data = factions.get_factions()
-    
+
     for existing_name, _ in pairs(factions_data) do
         if existing_name:lower() == faction_name:lower() then
             return false, "A faction with this name already exists"
         end
     end
-    
+
     factions_data[faction_name] = {
         owner = owner,
-        members = {[owner] = true}
+        members = { [owner] = true },
+        description = "This faction does not have a description"
     }
     factions.save_factions(factions_data)
-    
+
     local player = minetest.get_player_by_name(owner)
     if player then
         factions.update_nametag(player)
     end
-    
+
     return true, "Faction created successfully"
 end
 
 function factions.players_in_same_faction(player1_name, player2_name)
     local faction1 = factions.get_player_faction(player1_name)
     local faction2 = factions.get_player_faction(player2_name)
-    
+
     return faction1 and faction2 and faction1 == faction2
 end
 
@@ -110,18 +129,43 @@ function factions.get_faction_owner(faction_name)
     return faction and faction.owner or nil
 end
 
+function factions.update_faction(faction_name, faction_data)
+    local factions_data = factions.get_factions()
+    factions_data[faction_name] = faction_data
+
+    factions.save_factions(factions_data)
+end
+
+function factions.set_faction_descrip(faction_name, descrip)
+    local faction_data = factions.get_faction_by_name(faction_name)
+
+    faction_data.description = descrip
+
+    factions.update_faction(faction_name, faction_data)
+end
+
+function factions.get_faction_descrip(faction_name)
+    local faction_data = factions.get_faction_by_name(faction_name)
+
+    if faction_data ~= nil then
+        return faction_data.description
+    end
+
+    return nil
+end
+
 function factions.change_faction_owner(faction_name, new_owner)
     local factions_data = factions.get_factions()
     local faction = factions_data[faction_name]
-    
+
     if not faction then
         return false, "Faction does not exist"
     end
-    
+
     if not faction.members[new_owner] then
         return false, "New owner must be a faction member"
     end
-    
+
     faction.owner = new_owner
     factions.save_factions(factions_data)
     return true, "Faction owner changed successfully"
@@ -153,34 +197,35 @@ function factions.rename_faction(old_name, new_name)
     if not new_name:match("^[a-zA-Z]+$") then
         return false, "Faction name must contain only letters (a-z, A-Z)"
     end
-    
+
     local factions_data = factions.get_factions()
-    
+
     for existing_name, _ in pairs(factions_data) do
         if existing_name:lower() == new_name:lower() then
             return false, "A faction with this name already exists"
         end
     end
-    
+
     local faction = factions_data[old_name]
     factions_data[old_name] = nil
     factions_data[new_name] = faction
     factions.save_factions(factions_data)
-    
+
     for member_name in pairs(faction.members) do
         local player = minetest.get_player_by_name(member_name)
         if player then
             factions.update_nametag(player)
         end
     end
-    
+
     return true, "Faction renamed successfully"
 end
 
 function factions.send_faction_order(faction_name, order_message)
     local members = factions.get_faction_players(faction_name)
     for _, member_name in ipairs(members) do
-        notifications_manager.handle_notification(member_name, minetest.colorize("#FF9900", "[Faction Order] ") .. order_message)
+        notifications_manager.handle_notification(member_name,
+            minetest.colorize("#FF9900", "[Faction Order] ") .. order_message)
     end
 end
 
@@ -189,23 +234,23 @@ function factions.send_faction_message(sender_name, faction_name, target_name, m
     if not target_name then
         local members = factions.get_faction_players(faction_name)
         for _, member_name in ipairs(members) do
-            if member_name ~= sender_name then  -- Don't send to the sender
-                notifications_manager.handle_notification(member_name, 
-                    minetest.colorize("#99FF99", "[Faction Chat] ") .. 
+            if member_name ~= sender_name then -- Don't send to the sender
+                notifications_manager.handle_notification(member_name,
+                    minetest.colorize("#99FF99", "[Faction Chat] ") ..
                     sender_name .. ": " .. message)
             end
         end
         return true, "Message sent to all faction members"
     end
-    
+
     -- Check if target is in the same faction
     if not factions.player_is_member(target_name, faction_name) then
         return false, "Player is not in your faction"
     end
-    
+
     -- Send direct message
-    notifications_manager.handle_notification(target_name, 
-        minetest.colorize("#99FF99", "[Faction PM] ") .. 
+    notifications_manager.handle_notification(target_name,
+        minetest.colorize("#99FF99", "[Faction PM] ") ..
         sender_name .. ": " .. message)
     return true, "Message sent to " .. target_name
 end
@@ -226,7 +271,8 @@ minetest.register_chatcommand("faction", {
 - rename <newname>: Rename your faction (owner only)
 - order <message>: Send an order message to all faction members (owner only)
 - msg <message>: Send a message to all online faction members
-- msg <player> <message>: Send a private message to a specific faction member]],
+- msg <player> <message>: Send a private message to a specific faction member
+- info <faction>: Get the owner, members, and description for a faction]],
     func = function(name, param)
         local args = param:split(" ")
         local action = args[1]
@@ -237,38 +283,36 @@ minetest.register_chatcommand("faction", {
                 return false, "You are already in a faction"
             end
             return factions.create_faction(faction_name, name)
-        
         elseif action == "leave" then
             local faction_name = factions.get_player_faction(name)
             local factions_data = factions.get_factions()
-            
+
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             if factions_data[faction_name].owner == name then
                 return false, "Faction owner cannot leave. Use /faction disband instead"
             end
 
             factions_data[faction_name].members[name] = nil
             factions.save_factions(factions_data)
-            
+
             notifications_manager.handle_notification(factions_data[faction_name].owner, name .. " has left your faction")
-            
+
             local player = minetest.get_player_by_name(name)
             if player then
                 factions.update_nametag(player)
             end
-            
-            return true, "You have left the faction " .. faction_name
 
+            return true, "You have left the faction " .. faction_name
         elseif action == "invite" and args[2] then
             local player = args[2]
             local faction_name = factions.get_player_faction(name)
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             local factions_data = factions.get_factions()
             if factions_data[faction_name].owner ~= name then
                 return false, "Only the faction owner can invite players"
@@ -277,15 +321,16 @@ minetest.register_chatcommand("faction", {
             local invites = factions.get_player_invites(player)
             table.insert(invites, faction_name)
             factions.save_player_invites(player, invites)
-            notifications_manager.handle_notification(player, "You have been invited to join faction " .. faction_name .. ". Use /faction accept " .. faction_name .. " to join.")
-            
+            notifications_manager.handle_notification(player,
+                "You have been invited to join faction " ..
+                faction_name .. ". Use /faction accept " .. faction_name .. " to join.")
+
             local invited_player = minetest.get_player_by_name(player)
             if invited_player then
                 factions.update_nametag(invited_player)
             end
-            
+
             return true, "Invited " .. player .. " to faction"
-        
         elseif action == "accept" and args[2] then
             local faction_name = args[2]
             local invites = factions.get_player_invites(name)
@@ -310,19 +355,18 @@ minetest.register_chatcommand("faction", {
             factions_data[faction_name].members[name] = true
             factions.save_factions(factions_data)
             factions.save_player_invites(name, invites)
-            
+
             local player = minetest.get_player_by_name(name)
             if player then
                 factions.update_nametag(player)
             end
-            
+
             return true, "You have joined " .. faction_name
-        
         elseif action == "kick" and args[2] then
             local player = args[2]
             local faction_name = factions.get_player_faction(name)
             local factions_data = factions.get_factions()
-            
+
             if not faction_name or factions_data[faction_name].owner ~= name then
                 return false, "You are not the faction owner"
             end
@@ -334,18 +378,17 @@ minetest.register_chatcommand("faction", {
             factions_data[faction_name].members[player] = nil
             factions.save_factions(factions_data)
             notifications_manager.handle_notification(player, "You have been kicked from faction " .. faction_name)
-            
+
             local kicked_player = minetest.get_player_by_name(player)
             if kicked_player then
                 factions.update_nametag(kicked_player)
             end
-            
+
             return true, "Kicked " .. player .. " from faction"
-        
         elseif action == "disband" then
             local faction_name = factions.get_player_faction(name)
             local factions_data = factions.get_factions()
-            
+
             if not faction_name or factions_data[faction_name].owner ~= name then
                 return false, "You are not the faction owner"
             end
@@ -355,13 +398,14 @@ minetest.register_chatcommand("faction", {
 
             for member_name in pairs(factions_data[faction_name].members) do
                 if member_name ~= name then
-                    notifications_manager.handle_notification(member_name, "The faction " .. faction_name .. " has been disbanded by the owner")
+                    notifications_manager.handle_notification(member_name,
+                        "The faction " .. faction_name .. " has been disbanded by the owner")
                 end
             end
 
             factions_data[faction_name] = nil
             factions.save_factions(factions_data)
-            
+
             -- Update nametags for all former members
             for _, member_name in ipairs(members) do
                 local player = minetest.get_player_by_name(member_name)
@@ -369,129 +413,140 @@ minetest.register_chatcommand("faction", {
                     factions.update_nametag(player)
                 end
             end
-            
+
             return true, "Faction disbanded"
-        
         elseif action == "owner" and args[2] then
             local faction_name = args[2]
             local owner = factions.get_faction_owner(faction_name)
-            
+
             if not owner then
                 return false, "Faction does not exist"
             end
-            
-            return true, "The owner of faction " .. faction_name .. " is " .. owner
 
+            return true, "The owner of faction " .. faction_name .. " is " .. owner
         elseif action == "transfer" and args[2] then
             local new_owner = args[2]
             local faction_name = factions.get_player_faction(name)
-            
+
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             if not factions.player_is_owner(name, faction_name) then
                 return false, "Only the faction owner can transfer ownership"
             end
-            
+
             local success, msg = factions.change_faction_owner(faction_name, new_owner)
             if success then
                 notifications_manager.handle_notification(new_owner, "You are now the owner of faction " .. faction_name)
                 local members = factions.get_faction_players(faction_name)
                 for _, member in ipairs(members) do
                     if member ~= new_owner and member ~= name then
-                        notifications_manager.handle_notification(member, new_owner .. " is now the owner of your faction")
+                        notifications_manager.handle_notification(member,
+                            new_owner .. " is now the owner of your faction")
                     end
                 end
             end
             return success, msg
-
         elseif action == "rename" and args[2] then
             local new_name = args[2]
             local faction_name = factions.get_player_faction(name)
             local factions_data = factions.get_factions()
-            
+
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             if factions_data[faction_name].owner ~= name then
                 return false, "Only the faction owner can rename the faction"
             end
-            
+
             local success, msg = factions.rename_faction(faction_name, new_name)
             if success then
                 for member_name in pairs(factions_data[faction_name].members) do
-                    notifications_manager.handle_notification(member_name, "Your faction has been renamed to " .. new_name)
+                    notifications_manager.handle_notification(member_name,
+                        "Your faction has been renamed to " .. new_name)
                 end
             end
             return success, msg
-
         elseif action == "order" then
             local faction_name = factions.get_player_faction(name)
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             if not factions.player_is_owner(name, faction_name) then
                 return false, "Only the faction owner can send orders"
             end
-            
+
             -- Get the order message (everything after "order")
             local order_message = param:sub(7) -- Remove "order "
             if order_message == "" then
                 return false, "Please provide an order message"
             end
-            
+
             factions.send_faction_order(faction_name, order_message)
             return true, "Order sent to all faction members"
-
         elseif action == "msg" then
             local faction_name = factions.get_player_faction(name)
             if not faction_name then
                 return false, "You are not in a faction"
             end
-            
+
             if not args[2] then
-                return false, "Please provide a message or target player and message"
+                return false, "Please provide a target player and message."
             end
-            
+
+
+            local target_name = args[2]
+            local message = param:sub(4 + #target_name + 1)
+
+            return factions.send_faction_message(name, faction_name, target_name, message)
+        elseif action == "chat" then
             local target_name = nil
-            local message
-            
-            -- Get the message (everything after "msg")
-            if args[3] then
-                -- If there's a third argument, treat the second as target name
-                target_name = args[2]
-                message = param:sub(#args[1] + #args[2] + 3) -- Remove "msg playername "
-            else
-                message = param:sub(5) -- Remove "msg "
-            end
-            
-            if message == "" then
+
+            if not args[2] then
                 return false, "Please provide a message"
             end
-            
-            return factions.send_faction_message(name, faction_name, target_name, message)
 
+            local message = param:sub(5)
+
+            return factions.send_faction_message(name, factions.get_player_faction(name), nil, message)
         elseif action == "invites" then
             local invites = factions.get_player_invites(name)
-            
+
             if #invites == 0 then
                 return true, "You have no pending faction invites."
             end
-            
+
             local response = "Your pending faction invites:\n"
             for _, faction_name in ipairs(invites) do
                 local owner = factions.get_faction_owner(faction_name)
                 response = response .. "- " .. faction_name .. " (Owner: " .. owner .. ")\n"
             end
             response = response .. "Use '/faction accept <faction>' to join a faction."
-            
-            return true, response
 
+            return true, response
+        elseif action == "info" then
+            if factions.get_faction_descrip(args[2]) ~= nil then
+                local data = {
+                    "Owner: " .. factions.get_faction_owner(args[2]),
+                    "Members: " .. table.concat(factions.get_faction_players(args[2]), ", "),
+                    "Description:" .. factions.get_faction_descrip(args[2])
+                }
+
+                minetest.chat_send_player(name, table.concat(data, "\n"))
+            end
+        elseif action == "set_descrip" then
+            if factions.player_is_owner(name, factions.get_player_faction(name)) then
+                factions.set_faction_descrip(factions.get_player_faction(name), param:sub(12))
+                minetest.chat_send_player(name, "Faction description changed successfully.")
+            else
+                minetest.chat_send_player(name, "Only the owner can set the faction description.")
+            end
         else
-            return false, "Invalid command. Available commands: create, invite, accept, kick, disband, leave, owner, transfer, rename, order, msg"
+            return false,
+                "Invalid command. Available commands: create, invite, accept, kick, disband, leave, owner, transfer, rename, order, msg, info"
         end
     end
 })
@@ -510,7 +565,8 @@ minetest.register_chatcommand("factions", {
             for _ in pairs(faction.members) do
                 member_count = member_count + 1
             end
-            response = response .. "- " .. faction_name .. " (Owner: " .. faction.owner .. ", Members: " .. member_count .. ")\n"
+            response = response ..
+                "- " .. faction_name .. " (Owner: " .. faction.owner .. ", Members: " .. member_count .. ")\n"
         end
         return true, response
     end
